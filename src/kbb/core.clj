@@ -156,12 +156,28 @@
     #{"s" "show"} (cmd-show board-dir args)
     (die! "Unknown command: '%s'" cmd)))
 
+(defn get-env [arg]
+  (let [vector-arg? (vector? arg)
+        key (if vector-arg? (first arg) arg)
+        append-path (if vector-arg? (rest arg) nil)
+        value (System/getenv key)]
+    (if (and value append-path)
+      (str (apply path (cons value append-path)))
+      value)))
+
+(defn get-first-env [& args]
+  (->> args
+       (map get-env)
+       (filter (complement nil?))
+       (filter (complement string/blank?))
+       first))
+
 (def cli-options
   [["-b" "--board-dir PATH" (str "Directory where the board is found in. "
                                  "Defaults to environment variable KBB_ROOT "
                                  "or ~/.kbb-board if that is unset.")
-    :default-fn (fn [_] (or (System/getenv "KBB_ROOT")
-                            (path (System/getenv "HOME") ".kbb-board")))]])
+    :default-fn (fn [_] (or (get-first-env "KBB_ROOT" ["HOME" ".kbb-board"])
+                            (die! "No board directory found, use -b")))]])
 
 (defn main! [& args]
   (let [{:keys [options arguments errors]} (cli/parse-opts args cli-options
