@@ -1,4 +1,4 @@
-(defproject kbb "0.2.0-SNAPSHOT"
+(defproject kbb "0.3.0-SNAPSHOT"
   :description "Kanban Board"
   :url "https://github.com/hartenfels/kbb"
   :license {:name "MIT License"

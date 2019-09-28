@@ -1,8 +1,11 @@
 (ns kbb.core
   (:require [clojure.java.io :as io]
-            [clojure.string :as string]
-            [clojure.tools.cli :as cli])
-  (:import [java.nio.file LinkOption Files Path Paths]
+            [clojure.tools.cli :as cli]
+            [clojure.string :as string])
+  (:import [java.lang ProcessBuilder$Redirect]
+           [java.nio.file CopyOption LinkOption Files Path Paths
+            StandardCopyOption]
+           [java.nio.file.attribute FileAttribute]
            [java.util.regex Pattern])
   (:gen-class))
 
@@ -50,6 +53,46 @@
 
 (defn slurp-path [path-or-string]
   (-> path-or-string path str slurp))
+
+(defn spit-path [path-or-string content]
+  (spit (-> path-or-string path str) content))
+
+(defn cp [from to]
+  (Files/copy (path from) (path to)
+              (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING])))
+
+(defn mktemp [prefix suffix]
+  (Files/createTempFile prefix suffix (empty-array FileAttribute)))
+
+
+(defn system! [args]
+  (-> (ProcessBuilder. (into-array String args))
+      (.redirectInput ProcessBuilder$Redirect/INHERIT)
+      (.redirectOutput ProcessBuilder$Redirect/INHERIT)
+      (.redirectError ProcessBuilder$Redirect/INHERIT)
+      (.start)
+      (.waitFor)))
+
+(defn split-command [command]
+  (-> command string/trim (string/split #"\s+")))
+
+(defn edit-file! [editor-command file]
+  (let [file-name (str file)
+        exit-code (system! (concat (split-command editor-command) [file-name]))]
+    (if (= exit-code 0)
+      (slurp-path file-name)
+      (die! "Attempt to edit file '%s' with editor '%s' exited with code %d"
+            file-name editor-command exit-code))))
+
+(defn edit-temporary-file!
+  ([editor-command] (edit-temporary-file! editor-command nil))
+  ([editor-command existing-file]
+   (let [temp-file (mktemp "kbb_" ".txt")]
+     (try
+       (when existing-file
+         (cp existing-file temp-file))
+       (edit-file! editor-command temp-file)
+       (finally (Files/deleteIfExists temp-file))))))
 
 
 (defn- strip-leading-digits [column]
@@ -108,6 +151,13 @@
                 (re-pattern (str "(?i)" string-or-pattern)))]
     (read-filtered-tasks-flat #(re-find regex (-> % :task task-title)) dir)))
 
+(defn find-single-task-by-pattern! [pattern dir]
+  (let [tasks (read-title-matched-tasks-flat pattern dir)]
+    (case (count tasks)
+      0 (die! "No candidates found for /%s/" pattern)
+      1 (first tasks)
+      (die! "Found multiple candidates for /%s/" pattern))))
+
 
 (defn- tasks-titles-by-column-title [{:keys [column tasks]}]
   {:column (column-title column)
@@ -140,20 +190,51 @@
   (format "(%s) %s" (column-title column) (task-content task)))
 
 (defn show-single-task-by-pattern [pattern dir]
-  (let [tasks (read-title-matched-tasks-flat pattern dir)]
-    (case (count tasks)
-      0 (die! "No candidates found for /%s/" pattern)
-      1 (-> tasks first format-full-task)
-      (die! "Found multiple candidates for /%s/" pattern))))
+  (format-full-task (find-single-task-by-pattern! pattern dir)))
 
 (defn cmd-show [dir args]
   (show-single-task-by-pattern (string/join " " args) dir))
 
 
-(defn run-command! [[cmd & args] {:keys [board-dir]}]
+(defn extract-task-info [content]
+  (let [normalized-content (str (string/trim content) "\n")
+        title (-> normalized-content string/split-lines first)
+        file-name (string/replace title #"\W" "_")]
+    {:content normalized-content
+     :title title
+     :file-name file-name}))
+
+(defn filter-tasks-by-file-name [file-name dir]
+  (read-filtered-tasks-flat #(= file-name (-> % :task basename)) dir))
+
+(defn ensure-no-tasks-exist-with-file-name [file-name dir]
+  (when-not (empty? (filter-tasks-by-file-name file-name dir))
+    (die! "A task with file name '%s' already exists" file-name)))
+
+(defn add-task-from-content [dir column content]
+  (let [{:keys [content file-name]} (extract-task-info content)
+        file-path (path column file-name)]
+    (ensure-no-tasks-exist-with-file-name file-name dir)
+    (spit-path (path column file-name) content)
+    (format-full-task {:column column :task file-path})))
+
+(defn add-new-task [dir editor-command column]
+  (let [content (edit-temporary-file! editor-command)
+        column (-> dir list-columns first)]
+    (if (string/blank? content)
+      (die! "File is blank, aborting")
+      (add-task-from-content dir column content))))
+
+(defn cmd-add [dir editor-command args]
+  (if (empty? args)
+    (add-new-task dir editor-command (-> dir list-columns first))
+    (die! "Unknown arguments to 'add' command: %s" args)))
+
+(defn run-command! [[cmd & args] {:keys [board-dir editor]}]
   (condp contains? cmd
     #{"b" "board"} (cmd-board board-dir args)
     #{"s" "show"} (cmd-show board-dir args)
+    #{"a" "add"} (cmd-add board-dir editor args)
     (die! "Unknown command: '%s'" cmd)))
 
 (defn get-env [arg]
@@ -177,7 +258,12 @@
                                  "Defaults to environment variable KBB_ROOT "
                                  "or ~/.kbb-board if that is unset.")
     :default-fn (fn [_] (or (get-first-env "KBB_ROOT" ["HOME" ".kbb-board"])
-                            (die! "No board directory found, use -b")))]])
+                            (die! "No board directory found, use -b")))]
+   ["-e" "--editor COMMAND" (str "Command for your editor that will be "
+                                 "executed when there's a file to edit. "
+                                 "Defaults to environment variable EDITOR.")
+    :default-fn (fn [_] (or (get-first-env "EDITOR")
+                            (die! "No editor found, use -e")))]])
 
 (defn main! [& args]
   (let [{:keys [options arguments errors]} (cli/parse-opts args cli-options
