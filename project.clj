@@ -7,4 +7,5 @@
                  [org.clojure/tools.cli "0.4.2"]]
   :main ^:skip-aot kbb.core
   :target-path "target/%s"
-  :profiles {:uberjar {:aot :all}})
+  :profiles {:uberjar {:aot :all}
+             :dev {:dependencies [[org.clojure/tools.namespace "0.3.1"]]}})
