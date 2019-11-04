@@ -61,6 +61,18 @@
   (Files/copy (path from) (path to)
               (into-array CopyOption [StandardCopyOption/REPLACE_EXISTING])))
 
+(defn assemble-move-target [from-path to-path]
+  (if (is-directory? to-path)
+    (.resolve to-path (.getFileName from-path))
+    to-path))
+
+(defn mv [from to]
+  (let [from-path (path from)
+        to-path (path to)
+        move-target (assemble-move-target from-path to-path)]
+    (Files/move from-path move-target (empty-array CopyOption))
+    move-target))
+
 (defn mktemp [prefix suffix]
   (Files/createTempFile prefix suffix (empty-array FileAttribute)))
 
@@ -230,11 +242,32 @@
     (add-new-task dir editor-command (-> dir list-columns first))
     (die! "Unknown arguments to 'add' command: %s" args)))
 
+
+(defn get-next-column [column]
+  (->> column
+       .getParent
+       list-columns
+       (drop-while (partial not= column))
+       second))
+
+(defn find-next-column! [column]
+  (or (get-next-column column)
+      (die! "No next column after '%s'" (column-title column))))
+
+(defn cmd-move [dir args]
+  (let [pattern (string/join " " args)
+        {:keys [task column]} (find-single-task-by-pattern! pattern dir)
+        next-column (find-next-column! column)
+        next-task (mv task next-column)]
+    (format-full-task {:task next-task :column next-column})))
+
+
 (defn run-command! [[cmd & args] {:keys [board-dir editor]}]
   (condp contains? cmd
     #{"b" "board"} (cmd-board board-dir args)
     #{"s" "show"} (cmd-show board-dir args)
     #{"a" "add"} (cmd-add board-dir editor args)
+    #{"m" "mv" "move"} (cmd-move board-dir args)
     (die! "Unknown command: '%s'" cmd)))
 
 (defn get-env [arg]
